@@ -1,0 +1,4 @@
+train: C:/Users/Owner/Desktop/THESIS/Model/car/train/images
+val: C:/Users/Owner/Desktop/THESIS/Model/car/valid/images
+nc: 1
+names: ["car"]
