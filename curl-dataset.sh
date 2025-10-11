@@ -5,7 +5,6 @@
 # Usage: ./curl-dataset.sh [--help|-h] [-d <dataset-name>]
 
 mkdir -p datasets
-cd datasets
 
 if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
   echo "Usage: $0 [--help|-h] [-d <dataset-name>]"
@@ -66,8 +65,8 @@ if [ "$1" == "-d" ] && [ -n "$2" ]; then
   fi
   eval "$CURL_CMD"
 
-  unzip "$DATASET_NAME"
-  rm "$DATASET_NAME"
+  unzip "datasets/$DATASET_NAME"
+  rm "datasets/$DATASET_NAME"
 
   exit 0
 fi
