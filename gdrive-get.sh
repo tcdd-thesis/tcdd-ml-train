@@ -108,7 +108,7 @@ while [[ $# -gt 0 ]]; do
             MODE="dataset"
             shift
             ;;
-        --ls|--list)
+        -ls|--list)
             LIST=true
             shift
             ;;
