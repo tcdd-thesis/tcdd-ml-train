@@ -37,8 +37,10 @@ else
 fi
 
 # Activate Venv
-PIP_EXE="$VENV_DIR/Scripts/pip.exe"
-PYTHON_EXE="$VENV_DIR/Scripts/python.exe"
+PIP_EXE_WIN="$VENV_DIR/Scripts/pip.exe"
+PYTHON_EXE_WIN="$VENV_DIR/Scripts/python.exe"
+PIP_EXE_UNIX="$VENV_DIR/bin/pip"
+PYTHON_EXE_UNIX="$VENV_DIR/bin/python"
 
 if [ ! -d "$VENV_DIR" ]; then
     echo "Error: Virtual environment $VENV_DIR does not exist."
@@ -46,8 +48,14 @@ if [ ! -d "$VENV_DIR" ]; then
     exit 1
 fi
 
-if [ ! -f "$PYTHON_EXE" ]; then
-    echo "Error: Python not found in $VENV_DIR."
+if [ -f "$PYTHON_EXE_WIN" ] && [ -f "$PIP_EXE_WIN" ]; then
+    PYTHON_EXE="$PYTHON_EXE_WIN"
+    PIP_EXE="$PIP_EXE_WIN"
+elif [ -f "$PYTHON_EXE_UNIX" ] && [ -f "$PIP_EXE_UNIX" ]; then
+    PYTHON_EXE="$PYTHON_EXE_UNIX"
+    PIP_EXE="$PIP_EXE_UNIX"
+else
+    echo "Error: Python executable not found in $VENV_DIR."
     exit 1
 fi
 
@@ -78,8 +86,8 @@ usage() {
     echo "  -h, --help        Show this help message and exit"
     echo ""
     echo "Examples:"
-    echo "  $0 -m --ls"
-    echo "  $0 -d my-dataset -o data/datasets/ --extract"
+    echo "  $0 -m -ls"
+    echo "  $0 --dataset my-dataset --output data/datasets/ --extract"
 }
 
 if [ $# -eq 0 ]; then
@@ -121,6 +129,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
+            if [[ "$1" == -* ]]; then
+                echo "Error: Unknown option: $1"
+                usage
+                exit 1
+            fi
             TARGET_NAME="$1"
             shift
             ;;
