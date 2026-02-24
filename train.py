@@ -1,3 +1,8 @@
+image_dir = 'datasets/traffic-signs-detection1/train/images'
+data_yaml = 'datasets/traffic-signs-detection1/data.yaml'
+epoch_test = 1
+epoch_train = 100
+
 # Import Essential Libraries
 import os
 import random
@@ -13,29 +18,33 @@ sns.set(style='darkgrid')
 import pathlib
 import glob
 from tqdm.notebook import trange, tqdm
+from ultralytics import YOLO
 import warnings
 warnings.filterwarnings('ignore')
 
 # Configure the visual appearance of Seaborn plots
 sns.set(rc={'axes.facecolor': '#eae8fa'}, style='darkgrid')
 
-Image_dir = r'C:\Users\Owner\Desktop\THESIS\Model\car\train\images'
+# Import all images from the directory
+image_files = os.listdir(image_dir)
+imported_images = image_files
+print(f'Total images imported: {len(imported_images)}')
 
-num_samples = 9
-image_files = os.listdir(Image_dir)
+# Print the shape of all imported images from the directory
+image_files = os.listdir(image_dir)
+for idx, image_name in enumerate(image_files):
+    img_path = os.path.join(image_dir, image_name)
+    img = cv2.imread(img_path)
+    if img is not None:
+        h, w, c = img.shape
+        print(f'Image {idx+1}: {image_name} - shape: {w}x{h}, channels: {c}')
+    else:
+        print(f'Image {idx+1}: {image_name} - could not be loaded.')
 
-# Randomly select num_samples images
-rand_images = random.sample(image_files, num_samples)
-
-fig, axes = plt.subplots(3, 3, figsize=(11, 11))
-
-for i in range(num_samples):
-    image = rand_images[i]
-    ax = axes[i // 3, i % 3]
-    ax.imshow(plt.imread(os.path.join(Image_dir, image)))
-    ax.set_title(f'Image {i+1}')
-    ax.axis('off')
-
-plt.tight_layout()
-plt.show()
-
+model = YOLO('yolov8n.pt')  # You can use yolov8s.pt, yolov8m.pt, etc.
+results = model.train(
+    data=data_yaml,     # Full path to the dataset config file
+    epochs=epoch_test,  # Number of epochs
+    imgsz=640,          # Image size
+    batch=16            # Batch size
+)
