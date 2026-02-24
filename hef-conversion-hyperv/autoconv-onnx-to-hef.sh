@@ -15,7 +15,6 @@
 #   -a, --arch         Hailo HW architecture target                  (default: hailo8l)
 #   -n, --name         Hailo Model Zoo model config name             (default: yolov11n)
 #   -i, --images       Max calibration images to use                 (default: 100)
-#   -w, --workdir      Shared host↔container working directory       (default: <script_dir>/shared_with_docker)
 #       --keep-calib   Do NOT delete staged calib images after compile
 #   -h, --help         Show this help message
 #
@@ -46,16 +45,18 @@ ONNX_PATH=""
 DATASET_DIR=""
 OUTPUT_DIR="./output"
 CLASSES=""          # empty = auto-detect from data.yaml
-CLASSES_SOURCE=""  # tracks where the value came from
+CLASSES_SOURCE=""   # tracks where the value came from
 HW_ARCH="hailo8l"
 MODEL_NAME="yolov11n"
 MAX_CALIB=100
-WORK_DIR="${SCRIPT_DIR}/shared_with_docker"
 KEEP_CALIB=false
 
-CONTAINER_NAME="hailo_conversion"
-HAILO_IMAGE="hailo8_ai_sw_suite_2025-10:1"
-HAILO_TAR_GLOB="${SCRIPT_DIR}/hailo8_ai_sw_suite*.tar.gz"
+# These mirror hailo_ai_sw_suite_docker_run.sh exactly — do not change
+readonly CONTAINER_NAME="hailo8_ai_sw_suite_2025-10_container"
+readonly HAILO_IMAGE="hailo8_ai_sw_suite_2025-10:1"
+readonly HAILO_TAR_FILE="${SCRIPT_DIR}/hailo8_ai_sw_suite_2025-10.tar.gz"
+# WORK_DIR mirrors the suite script: -v $(pwd)/shared_with_docker/:/local/shared_with_docker:rw
+readonly WORK_DIR="${SCRIPT_DIR}/shared_with_docker"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -81,15 +82,11 @@ while [[ $# -gt 0 ]]; do
         -a|--arch)        HW_ARCH="$2";     shift 2 ;;
         -n|--name)        MODEL_NAME="$2";  shift 2 ;;
         -i|--images)      MAX_CALIB="$2";   shift 2 ;;
-        -w|--workdir)     WORK_DIR="$2";    shift 2 ;;
         --keep-calib)     KEEP_CALIB=true;  shift   ;;
         -h|--help)        usage ;;
         *) die "Unknown option: $1. Use --help for usage." ;;
     esac
 done
-
-# Expand tilde in WORK_DIR in case it was passed as a literal string
-WORK_DIR="${WORK_DIR/#\~/$HOME}"
 
 # ─── Interactive Prompts for Missing Required Values ─────────────────────────
 prompt_if_empty() {
@@ -163,7 +160,67 @@ echo ""
 read -rp "Proceed? [Y/n]: " _confirm
 [[ "${_confirm,,}" =~ ^n ]] && { echo "Aborted."; exit 0; }
 
-# ─── Step 1: Sample Calibration Images ───────────────────────────────────────
+# ─── Step 1: Detect / Start Hailo Docker Container ───────────────────────────
+step "Detecting Hailo Docker container"
+
+# Mirror hailo_ai_sw_suite_docker_run.sh: detect by exact container name
+NUM_EXISTS="$(docker ps -a -q -f "name=^${CONTAINER_NAME}$" | wc -l)"
+
+if [[ "$NUM_EXISTS" -ge 1 ]]; then
+    # Container exists — mirror resume_container(): docker start then exec
+    CONTAINER_STATUS="$(docker inspect --format='{{.State.Status}}' "$CONTAINER_NAME" \
+        2>/dev/null | tr -d '[:space:]')"
+    ok "Found container '${CONTAINER_NAME}' (status: ${CONTAINER_STATUS})"
+
+    if [[ "$CONTAINER_STATUS" != "running" ]]; then
+        warn "Container is stopped. Resuming..."
+        docker start "$CONTAINER_NAME"
+        ok "Container resumed."
+    else
+        ok "Container is already running."
+    fi
+else
+    # No container — mirror run_new_container(): load image + docker run
+    warn "No Hailo container found. Creating '${CONTAINER_NAME}'..."
+
+    # Mirror create_shared_dir()
+    mkdir -p "${WORK_DIR}"
+    chmod 777 "${WORK_DIR}"
+
+    # Mirror load_hailo_ai_sw_suite_image()
+    if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -qF "${HAILO_IMAGE}"; then
+        step "Loading Hailo Docker image (this can take 15-45 minutes)..."
+        [[ -f "$HAILO_TAR_FILE" ]] \
+            || die "Hailo Docker image archive not found: ${HAILO_TAR_FILE}"
+        docker load -i "$HAILO_TAR_FILE"
+        ok "Docker image loaded: ${HAILO_IMAGE}"
+    else
+        ok "Docker image already loaded: ${HAILO_IMAGE}"
+    fi
+
+    # Replicate key volume mounts from suite script (display/xauth mounts
+    # are omitted — not needed for non-interactive CLI compilation)
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        --privileged \
+        --net=host \
+        --ipc=host \
+        -v /dev:/dev \
+        -v /lib/firmware:/lib/firmware \
+        -v /lib/modules:/lib/modules \
+        -v /lib/udev/rules.d:/lib/udev/rules.d \
+        -v /usr/src:/usr/src \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v /etc/machine-id:/etc/machine-id:ro \
+        -v /etc/timezone:/etc/timezone:ro \
+        -v /etc/localtime:/etc/localtime:ro \
+        -v "${WORK_DIR}:/local/shared_with_docker:rw" \
+        "$HAILO_IMAGE" \
+        sleep infinity
+    ok "Container '${CONTAINER_NAME}' created and running."
+fi
+
+# ─── Step 2: Sample Calibration Images ───────────────────────────────────────
 step "Collecting calibration images from dataset"
 
 # Search recursively for PNG/JPG images
@@ -185,8 +242,20 @@ else
     )
 fi
 
-# ─── Step 2: Stage Calibration Images into Shared Workdir ────────────────────
+# ─── Step 3: Stage Calibration Images into Shared Workdir ────────────────────
 step "Staging calibration images into shared workdir"
+
+# Clean up any leftovers from a previous (possibly failed) run
+if [[ -d "$CALIB_DIR" ]]; then
+    warn "Removing leftover calib_images/ from previous run..."
+    rm -rf "$CALIB_DIR"
+fi
+if [[ -f "${WORK_DIR}/${ONNX_FILENAME}" ]]; then
+    warn "Removing leftover ${ONNX_FILENAME} from previous run..."
+    rm -f "${WORK_DIR}/${ONNX_FILENAME}"
+fi
+# Also clear any stale .hef/.har outputs so a failed compile doesn't leave ghost files
+rm -f "${WORK_DIR}/${MODEL_NAME}.hef" "${WORK_DIR}/${MODEL_NAME}.har"
 
 mkdir -p "$CALIB_DIR"
 chmod 777 "$CALIB_DIR"
@@ -198,67 +267,11 @@ chmod 666 "$CALIB_DIR"/*
 
 ok "Staged ${#SELECTED_IMAGES[@]} images to: $CALIB_DIR"
 
-# ─── Step 3: Copy ONNX Model into Shared Workdir ─────────────────────────────
+# ─── Step 4: Copy ONNX Model into Shared Workdir ─────────────────────────────
 step "Copying ONNX model into shared workdir"
 
 cp "$ONNX_PATH" "${WORK_DIR}/${ONNX_FILENAME}"
 ok "Copied: ${ONNX_FILENAME} → ${WORK_DIR}/"
-
-# ─── Step 4: Ensure Hailo Docker Container is Running ────────────────────────
-step "Checking Hailo Docker container state"
-
-CONTAINER_STATUS="$(docker inspect --format='{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")"
-
-case "$CONTAINER_STATUS" in
-    running)
-        ok "Container '${CONTAINER_NAME}' is already running."
-        ;;
-    exited|created|paused)
-        warn "Container '${CONTAINER_NAME}' exists but is stopped. Starting it..."
-        docker start "$CONTAINER_NAME"
-        ok "Container started."
-        ;;
-    missing)
-        warn "No existing container found. Creating '${CONTAINER_NAME}'..."
-
-        # Load Docker image if not already loaded
-        if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -qF "${HAILO_IMAGE}"; then
-            step "Loading Hailo Docker image (this can take 15-45 minutes)..."
-            TAR_FILE="$(ls ${HAILO_TAR_GLOB} 2>/dev/null | head -1)"
-            [[ -z "$TAR_FILE" ]] && die "Hailo Docker image .tar.gz not found. Expected pattern: ${HAILO_TAR_GLOB}"
-            docker load < "$TAR_FILE"
-            ok "Docker image loaded: ${HAILO_IMAGE}"
-        else
-            ok "Docker image already loaded: ${HAILO_IMAGE}"
-        fi
-
-        # Create a detached container with the shared volume mounted
-        docker run -d \
-            --name "$CONTAINER_NAME" \
-            -v "${WORK_DIR}:/local/shared_with_docker" \
-            "$HAILO_IMAGE" \
-            sleep infinity
-        ok "Container '${CONTAINER_NAME}' created and running."
-        ;;
-    *)
-        die "Unexpected container state: '${CONTAINER_STATUS}'"
-        ;;
-esac
-
-# Verify the shared volume is mounted in the container
-MOUNT_CHECK="$(docker inspect --format='{{range .Mounts}}{{.Source}} → {{.Destination}}{{"\n"}}{{end}}' "$CONTAINER_NAME" 2>/dev/null)"
-if ! echo "$MOUNT_CHECK" | grep -qF "/local/shared_with_docker"; then
-    warn "Shared volume not mounted in running container."
-    warn "The container may have been created without the volume. Recreating..."
-    docker stop "$CONTAINER_NAME"
-    docker rm   "$CONTAINER_NAME"
-    docker run -d \
-        --name "$CONTAINER_NAME" \
-        -v "${WORK_DIR}:/local/shared_with_docker" \
-        "$HAILO_IMAGE" \
-        sleep infinity
-    ok "Container recreated with correct volume mapping."
-fi
 
 # ─── Step 5: Run hailomz compile ─────────────────────────────────────────────
 step "Running hailomz compile inside Hailo container"
@@ -285,6 +298,7 @@ ok "hailomz compile finished successfully!"
 
 # ─── Step 6: Copy HEF to Output Directory ────────────────────────────────────
 step "Saving .hef file to output directory"
+
 
 HEF_IN_WORKDIR="${WORK_DIR}/${MODEL_NAME}.hef"
 [[ -f "$HEF_IN_WORKDIR" ]] || die ".hef file not found at expected location: ${HEF_IN_WORKDIR}"
