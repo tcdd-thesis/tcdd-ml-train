@@ -55,6 +55,9 @@ KEEP_CALIB=false
 readonly CONTAINER_NAME="hailo8_ai_sw_suite_2025-10_container"
 readonly HAILO_IMAGE="hailo8_ai_sw_suite_2025-10:1"
 readonly HAILO_TAR_FILE="${SCRIPT_DIR}/hailo8_ai_sw_suite_2025-10.tar.gz"
+readonly HAILO_DOCKER_RUN_SH="${SCRIPT_DIR}/hailo_ai_sw_suite_docker_run.sh"
+# ZIP bundle that contains both the .tar.gz image and the docker_run.sh
+readonly HAILO_ZIP_FILE="${SCRIPT_DIR}/hailo_ai_sw_suite_2026-01_docker.zip"
 # WORK_DIR mirrors the suite script: -v $(pwd)/shared_with_docker/:/local/shared_with_docker:rw
 readonly WORK_DIR="${SCRIPT_DIR}/shared_with_docker"
 
@@ -165,41 +168,73 @@ step "Detecting Hailo Docker container"
 
 # Mirror hailo_ai_sw_suite_docker_run.sh: detect by exact container name
 NUM_EXISTS="$(docker ps -a -q -f "name=^${CONTAINER_NAME}$" | wc -l)"
+CONTAINER_STATUS=""
 
 if [[ "$NUM_EXISTS" -ge 1 ]]; then
-    # Container exists — mirror resume_container(): docker start then exec
+    # Container exists — read its current status (mirrors resume_container())
     CONTAINER_STATUS="$(docker inspect --format='{{.State.Status}}' "$CONTAINER_NAME" \
         2>/dev/null | tr -d '[:space:]')"
     ok "Found container '${CONTAINER_NAME}' (status: ${CONTAINER_STATUS})"
-
-    if [[ "$CONTAINER_STATUS" != "running" ]]; then
-        warn "Container is stopped. Resuming..."
-        docker start "$CONTAINER_NAME"
-        ok "Container resumed."
-    else
-        ok "Container is already running."
-    fi
 else
-    # No container — mirror run_new_container(): load image + docker run
-    warn "No Hailo container found. Creating '${CONTAINER_NAME}'..."
+    # ── First-time setup ────────────────────────────────────────────────────────
+    # Both hailo8_ai_sw_suite_2025-10.tar.gz and hailo_ai_sw_suite_docker_run.sh
+    # are packaged inside hailo_ai_sw_suite_2026-01_docker.zip.  Extract the zip
+    # if either file is absent before proceeding.
+    warn "No Hailo container found. Running first-time setup..."
 
-    # Mirror create_shared_dir()
+    if [[ ! -f "$HAILO_TAR_FILE" ]] || [[ ! -f "$HAILO_DOCKER_RUN_SH" ]]; then
+        warn "One or more bundle files missing. Searching for zip..."
+
+        # 1. Look next to this script first.
+        # 2. Expand search up to 3 levels above SCRIPT_DIR.
+        _ZIP_FOUND=""
+        if [[ -f "$HAILO_ZIP_FILE" ]]; then
+            _ZIP_FOUND="$HAILO_ZIP_FILE"
+        else
+            _ZIP_FOUND="$(find "$(dirname "$SCRIPT_DIR")" \
+                -maxdepth 3 \
+                -name "hailo_ai_sw_suite_2026-01_docker.zip" \
+                -print -quit 2>/dev/null || true)"
+        fi
+
+        [[ -n "$_ZIP_FOUND" ]] \
+            || die "Bundle zip not found. Expected one of:\n  ${HAILO_ZIP_FILE}\n  (or hailo_ai_sw_suite_2026-01_docker.zip within 3 dirs of ${SCRIPT_DIR})\nPlace the zip there and re-run."
+
+        warn "Extracting: ${_ZIP_FOUND}  →  ${SCRIPT_DIR}/"
+        command -v unzip &>/dev/null \
+            || die "'unzip' is required to extract the bundle but was not found in PATH."
+        unzip -o "$_ZIP_FOUND" -d "$SCRIPT_DIR"
+        ok "Extraction complete."
+    fi
+
+    [[ -f "$HAILO_TAR_FILE" ]]      || die "Expected after extraction: ${HAILO_TAR_FILE}"
+    [[ -f "$HAILO_DOCKER_RUN_SH" ]] || die "Expected after extraction: ${HAILO_DOCKER_RUN_SH}"
+
+    # ── Mirror create_shared_dir() ──────────────────────────────────────────────
     mkdir -p "${WORK_DIR}"
     chmod 777 "${WORK_DIR}"
 
-    # Mirror load_hailo_ai_sw_suite_image()
+    # ── Mirror load_hailo_ai_sw_suite_image() ──────────────────────────────────
+    # Matches hailo_ai_sw_suite_docker_run.sh exactly: docker load -i <tar>.
+    # We tee the output so we can grep for docker's own confirmation line
+    # ("Loaded image: <name>") while still showing progress to the user.
     if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -qF "${HAILO_IMAGE}"; then
-        step "Loading Hailo Docker image (this can take 15-45 minutes)..."
-        [[ -f "$HAILO_TAR_FILE" ]] \
-            || die "Hailo Docker image archive not found: ${HAILO_TAR_FILE}"
-        docker load -i "$HAILO_TAR_FILE"
-        ok "Docker image loaded: ${HAILO_IMAGE}"
+        step "Loading Hailo Docker image via hailo_ai_sw_suite_docker_run.sh approach (15-45 min)..."
+        _LOAD_LOG="$(mktemp)"
+        docker load -i "$HAILO_TAR_FILE" 2>&1 | tee "$_LOAD_LOG"
+        grep -qF "Loaded image: ${HAILO_IMAGE}" "$_LOAD_LOG" \
+            || die "docker load did not confirm 'Loaded image: ${HAILO_IMAGE}'.\nCheck the output above for errors."
+        rm -f "$_LOAD_LOG"
+        ok "Docker image confirmed loaded: ${HAILO_IMAGE}"
     else
         ok "Docker image already loaded: ${HAILO_IMAGE}"
     fi
 
-    # Replicate key volume mounts from suite script (display/xauth mounts
-    # are omitted — not needed for non-interactive CLI compilation)
+    # ── Mirror run_new_container() / prepare_docker_args() ─────────────────────
+    # We run detached (sleep infinity) instead of -ti so subsequent docker exec
+    # calls can drive hailomz compile non-interactively.
+    # Display/xauth mounts are omitted — not needed for headless CLI compilation.
+    step "Creating Hailo container '${CONTAINER_NAME}'..."
     docker run -d \
         --name "$CONTAINER_NAME" \
         --privileged \
@@ -217,7 +252,18 @@ else
         -v "${WORK_DIR}:/local/shared_with_docker:rw" \
         "$HAILO_IMAGE" \
         sleep infinity
-    ok "Container '${CONTAINER_NAME}' created and running."
+    ok "Container '${CONTAINER_NAME}' created."
+    CONTAINER_STATUS="running"   # docker run -d exits only after the container starts
+fi
+
+# ── Mirror resume_container(): ensure the container is up before exec ──────────
+# This handles: existing-but-stopped containers (e.g. after a VM reboot).
+if [[ "$CONTAINER_STATUS" != "running" ]]; then
+    warn "Container is stopped. Resuming (mirrors resume_container() in docker_run.sh)..."
+    docker start "$CONTAINER_NAME"
+    ok "Container '${CONTAINER_NAME}' started."
+else
+    ok "Container '${CONTAINER_NAME}' is running."
 fi
 
 # ─── Step 2: Sample Calibration Images ───────────────────────────────────────
