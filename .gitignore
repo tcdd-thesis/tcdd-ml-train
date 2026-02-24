@@ -3,3 +3,4 @@ datasets
 models
 runs
 .env*
+hef-conv-workspace/
