@@ -47,7 +47,7 @@ OUTPUT_DIR="./output"
 CLASSES=""          # empty = auto-detect from data.yaml
 CLASSES_SOURCE=""   # tracks where the value came from
 HW_ARCH="hailo8l"
-MODEL_NAME="yolov11n"
+MODEL_NAME="yolov8n"
 MAX_CALIB=100
 KEEP_CALIB=false
 
