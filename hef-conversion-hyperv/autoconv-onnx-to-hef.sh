@@ -15,11 +15,6 @@
 #   -a, --arch         Hailo HW architecture target                  (default: hailo8l)
 #   -n, --name         Hailo Model Zoo model config name             (default: yolov11n)
 #   -i, --images       Max calibration images to use                 (default: 100)
-#   -e, --end-nodes    Space-separated ONNX output node names passed to hailomz
-#                      compile via --end-nodes.  Required for YOLOv8 models to
-#                      avoid "expected conv but found concat" SDK errors.
-#                      For a standard YOLOv8 detection model use:
-#                        YOLOV8_END_NODES (see constant defined in script)
 #       --keep-calib   Do NOT delete staged calib images after compile
 #   -h, --help         Show this help message
 #
@@ -32,13 +27,6 @@
 #       --model   /home/ubuntu/models/best.onnx \
 #       --dataset /home/ubuntu/datasets/merged-ph-tcd-1 \
 #       --output  /home/ubuntu/models/hef
-#
-#   # YOLOv8 model — must pass end-nodes to avoid concat-layer SDK error
-#   ./convert_onnx_to_hef.sh \
-#       --model     /home/ubuntu/models/best.onnx \
-#       --dataset   /home/ubuntu/datasets/merged-ph-tcd-1 \
-#       --name      yolov8n \
-#       --end-nodes "$YOLOV8_END_NODES"
 #
 #   # Override auto-detected class count
 #   ./convert_onnx_to_hef.sh \
@@ -62,12 +50,6 @@ HW_ARCH="hailo8l"
 MODEL_NAME="yolov11n"
 MAX_CALIB=100
 KEEP_CALIB=false
-END_NODES=""        # empty = let hailomz auto-detect (fails for YOLOv8 — use --end-nodes)
-
-# Standard YOLOv8 detection-head pre-concat conv outputs.
-# Pass this via --end-nodes when compiling any YOLOv8 detection model to avoid
-# the "expected conv but found concat layer" AllocatorScriptParserException.
-YOLOV8_END_NODES="/model.22/cv2.0/cv2.0.2/Conv /model.22/cv2.1/cv2.1.2/Conv /model.22/cv2.2/cv2.2.2/Conv /model.22/cv3.0/cv3.0.2/Conv /model.22/cv3.1/cv3.1.2/Conv /model.22/cv3.2/cv3.2.2/Conv"
 
 # These mirror hailo_ai_sw_suite_docker_run.sh exactly — do not change
 readonly CONTAINER_NAME="hailo8_ai_sw_suite_2025-10_container"
@@ -100,7 +82,6 @@ while [[ $# -gt 0 ]]; do
         -a|--arch)        HW_ARCH="$2";     shift 2 ;;
         -n|--name)        MODEL_NAME="$2";  shift 2 ;;
         -i|--images)      MAX_CALIB="$2";   shift 2 ;;
-        -e|--end-nodes)   END_NODES="$2";   shift 2 ;;
         --keep-calib)     KEEP_CALIB=true;  shift   ;;
         -h|--help)        usage ;;
         *) die "Unknown option: $1. Use --help for usage." ;;
@@ -174,7 +155,6 @@ echo -e "  Model name    : ${MODEL_NAME}"
 echo -e "  Classes       : ${CLASSES}  (source: ${CLASSES_SOURCE})"
 echo -e "  HW arch       : ${HW_ARCH}"
 echo -e "  Max calib imgs: ${MAX_CALIB}"
-echo -e "  End nodes     : ${END_NODES:-'(auto-detect — may fail for YOLOv8)'}"
 echo -e "  Shared workdir: ${WORK_DIR}"
 echo ""
 read -rp "Proceed? [Y/n]: " _confirm
@@ -304,21 +284,14 @@ echo ""
 warn "This step typically takes 20-40 minutes on CPU. Output streams below."
 echo ""
 
-# Build optional --end-nodes flag; empty string means the flag is omitted entirely
-END_NODES_ARG=""
-if [[ -n "${END_NODES}" ]]; then
-    END_NODES_ARG="--end-nodes ${END_NODES}"
-fi
-
 docker exec "$CONTAINER_NAME" bash -c "
     source /hailo_virtualenv/bin/activate 2>/dev/null || true
     cd /local/shared_with_docker
-    hailomz compile '${MODEL_NAME}' \\
-        --ckpt '/local/shared_with_docker/${ONNX_FILENAME}' \\
-        --hw-arch '${HW_ARCH}' \\
-        --calib-path '/local/shared_with_docker/calib_images/' \\
-        --classes '${CLASSES}' \\
-        ${END_NODES_ARG}
+    hailomz compile '${MODEL_NAME}' \
+        --ckpt '/local/shared_with_docker/${ONNX_FILENAME}' \
+        --hw-arch '${HW_ARCH}' \
+        --calib-path '/local/shared_with_docker/calib_images/' \
+        --classes '${CLASSES}'
 "
 
 ok "hailomz compile finished successfully!"
