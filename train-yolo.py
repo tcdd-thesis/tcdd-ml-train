@@ -92,13 +92,6 @@ def _venv_python(venv_path: Path) -> Path:
     return venv_path / "bin" / "python"
 
 
-def _venv_pip(venv_path: Path) -> Path:
-    """Return the path to the venv's pip."""
-    if platform.system() == "Windows":
-        return venv_path / "Scripts" / "pip.exe"
-    return venv_path / "bin" / "pip"
-
-
 def _validate_venv(venv_str: str) -> str | None:
     """Validator for venv path input."""
     venv = Path(venv_str).resolve()
@@ -110,14 +103,14 @@ def _validate_venv(venv_str: str) -> str | None:
 
 def _ensure_packages(venv_path: Path) -> None:
     """Check for ultralytics in the venv; offer to install if missing."""
-    py = _venv_python(venv_path)
+    py = str(_venv_python(venv_path))
     print("\n  Checking for required packages in venv...")
 
     required = ["ultralytics"]
     missing = []
     for pkg in required:
         result = subprocess.run(
-            [str(py), "-c", f"import {pkg}"],
+            [py, "-c", f"import {pkg}"],
             capture_output=True,
         )
         if result.returncode != 0:
@@ -129,9 +122,8 @@ def _ensure_packages(venv_path: Path) -> None:
 
     print(f"  [!] Missing packages: {', '.join(missing)}")
     if _confirm("Install missing packages now?"):
-        pip = _venv_pip(venv_path)
         subprocess.run(
-            [str(pip), "install"] + missing,
+            [py, "-m", "pip", "install"] + missing,
             check=True,
         )
         print("  [OK] Packages installed successfully.")
