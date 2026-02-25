@@ -19,13 +19,14 @@ def main():
     parser.add_argument("-p", "--project", type=str, required=True)
     parser.add_argument("-v", "--version", type=int, required=True)
     parser.add_argument("-f", "--format", type=str, required=True)
+    parser.add_argument("-o", "--output", type=str, default="datasets", help="Download directory (default: datasets)")
     args = parser.parse_args()
 
     from roboflow import Roboflow
     rf = Roboflow(api_key=args.api_key)
     project = rf.workspace(args.workspace).project(args.project)
     version = project.version(args.version)
-    dataset = version.download(args.format)
+    dataset = version.download(args.format, location=args.output)
 
 if __name__ == "__main__":
     try:
