@@ -3,26 +3,22 @@
 YOLO Training Script - train-yolo.py
 =======================================
 Supports both CLI arguments and interactive prompts.
-Validates the target venv, installs missing packages, and
-re-launches itself under the correct Python interpreter.
+Requires an active virtual environment with ultralytics installed.
 
 Usage examples:
-    # Fully interactive — prompts for everything
-    python train.py
+    # Activate your venv first, then run:
+    python train-yolo.py
 
     # Fully specified
-    python train.py --data datasets/merged-ph-tcd-1-bbox --model yolo11n.pt \
-        --epochs 100 --batch 16 --imgsz 640 --venv .venv.ml
+    python train-yolo.py -d datasets/merged-ph-tcd-1-bbox -m yolo11n.pt -e 100 -b 16
 
     # Partial — missing args are prompted interactively
-    python train.py --epochs 50 --venv .venv.ml
+    python train-yolo.py --epochs 50 --model yolo11n.pt
 """
 
 from __future__ import annotations
 
 import argparse
-import os
-import platform
 import subprocess
 import sys
 import textwrap
@@ -82,38 +78,30 @@ def _confirm(message: str = "Proceed?", default_yes: bool = True) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Venv handling
+#  Venv & environment checks
 # ──────────────────────────────────────────────────────────────────────
 
-def _venv_python(venv_path: Path) -> Path:
-    """Return the path to the venv's Python interpreter."""
-    if platform.system() == "Windows":
-        return venv_path / "Scripts" / "python.exe"
-    return venv_path / "bin" / "python"
+def _check_active_venv() -> None:
+    """Ensure the script is running inside an activated virtual environment."""
+    if sys.prefix == sys.base_prefix:
+        print("  [ERR] No virtual environment detected.")
+        print("        Please activate your venv before running this script.")
+        print("        Example: .venv.ml\\Scripts\\activate  (Windows)")
+        print("                 source .venv.ml/bin/activate (Linux/Mac)")
+        sys.exit(1)
+    print(f"  [OK] Venv active: {sys.prefix}")
 
 
-def _validate_venv(venv_str: str) -> str | None:
-    """Validator for venv path input."""
-    venv = Path(venv_str).resolve()
-    py = _venv_python(venv)
-    if not py.exists():
-        return f"No Python interpreter found at {py}"
-    return None
-
-
-def _ensure_packages(venv_path: Path) -> None:
-    """Check for ultralytics in the venv; offer to install if missing."""
-    py = str(_venv_python(venv_path))
-    print("\n  Checking for required packages in venv...")
+def _ensure_packages() -> None:
+    """Check that required packages are importable in the active venv."""
+    print("  Checking for required packages...")
 
     required = ["ultralytics"]
     missing = []
     for pkg in required:
-        result = subprocess.run(
-            [py, "-c", f"import {pkg}"],
-            capture_output=True,
-        )
-        if result.returncode != 0:
+        try:
+            __import__(pkg)
+        except ImportError:
             missing.append(pkg)
 
     if not missing:
@@ -122,52 +110,44 @@ def _ensure_packages(venv_path: Path) -> None:
 
     print(f"  [!] Missing packages: {', '.join(missing)}")
     if _confirm("Install missing packages now?"):
-        subprocess.run(
-            [py, "-m", "pip", "install"] + missing,
-            check=True,
-        )
-        print("  [OK] Packages installed successfully.")
+        # Try pip, then uv, then python -m pip
+        py = sys.executable
+        methods = [
+            ("pip",           ["pip", "install"] + missing),
+            ("uv",            ["uv", "pip", "install"] + missing),
+            ("python -m pip", [py, "-m", "pip", "install"] + missing),
+        ]
+        for label, cmd in methods:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    print(f"  [OK] Packages installed successfully (via {label}).")
+                    return
+            except FileNotFoundError:
+                pass
+        print("  [ERR] All install methods failed. Try manually:")
+        print(f"        pip install {' '.join(missing)}")
+        print(f"    or: uv pip install {' '.join(missing)}")
+        sys.exit(1)
     else:
         print("  [ERR] Cannot proceed without required packages.")
         sys.exit(1)
 
 
-def _check_cuda(venv_path: Path) -> dict:
-    """Check CUDA availability inside the target venv. Returns GPU info dict."""
-    py = _venv_python(venv_path)
-    script = (
-        "import json, torch; "
-        "info = {'available': torch.cuda.is_available(), "
-        "'count': torch.cuda.device_count() if torch.cuda.is_available() else 0, "
-        "'devices': [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] "
-        "if torch.cuda.is_available() else []}; "
-        "print(json.dumps(info))"
-    )
-    result = subprocess.run(
-        [str(py), "-c", script],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return {"available": False, "count": 0, "devices": []}
-
-    import json
+def _check_cuda() -> dict:
+    """Check CUDA availability in the active environment. Returns GPU info dict."""
     try:
-        return json.loads(result.stdout.strip())
-    except (json.JSONDecodeError, ValueError):
+        import torch
+        return {
+            "available": torch.cuda.is_available(),
+            "count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            "devices": [
+                torch.cuda.get_device_name(i)
+                for i in range(torch.cuda.device_count())
+            ] if torch.cuda.is_available() else [],
+        }
+    except ImportError:
         return {"available": False, "count": 0, "devices": []}
-
-
-def _relaunch_in_venv(venv_path: Path) -> None:
-    """Re-launch this script under the venv's Python if necessary."""
-    target_py = _venv_python(venv_path).resolve()
-    current_py = Path(sys.executable).resolve()
-
-    if current_py == target_py:
-        return  # Already running under the correct interpreter
-
-    print(f"\n  Re-launching under venv Python: {target_py}")
-    result = subprocess.run([str(target_py)] + sys.argv)
-    sys.exit(result.returncode)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -219,9 +199,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             examples:
-              python train.py
-              python train.py -d datasets/merged-ph-tcd-1-bbox -m yolo11n.pt -e 100 -b 16 -v .venv.ml
-              python train.py --epochs 50 --venv .venv.ml
+              python train-yolo.py
+              python train-yolo.py -d datasets/merged-ph-tcd-1-bbox -m yolo11n.pt -e 100 -b 16
+              python train-yolo.py --epochs 50 --model yolo11n.pt
         """),
     )
     p.add_argument("-d", "--data", type=str, help="Path to YOLO dataset root directory (must contain data.yaml)")
@@ -229,10 +209,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-e", "--epochs", type=int, help="Number of training epochs")
     p.add_argument("-b", "--batch", type=int, help="Batch size")
     p.add_argument("-i", "--imgsz", type=int, help="Image size (default: 640)")
-    p.add_argument("-v", "--venv", type=str, help="Path to Python virtual environment")
     p.add_argument("-o", "--output", type=str, help="Output project directory (default: runs)")
     p.add_argument("-n", "--name", type=str, help="Run name inside output directory")
-    p.add_argument("-dev", "--device", type=str, help="Device: 'auto', 'cpu', '0', '0,1', etc. (default: auto)")
+    p.add_argument("-D", "--device", type=str, help="Device: 'auto', 'cpu', '0', '0,1', etc. (default: auto)")
     return p.parse_args()
 
 
@@ -245,18 +224,6 @@ def collect_config(args: argparse.Namespace) -> dict:
     cfg = {}
 
     print(_banner("YOLO Training Script — Configuration"))
-
-    # ── Venv ──────────────────────────────────────────────────────────
-    if args.venv:
-        err = _validate_venv(args.venv)
-        if err:
-            print(f"  [ERR] {err}")
-            sys.exit(1)
-        cfg["venv"] = args.venv
-    else:
-        print("\n  Specify the Python virtual environment to use.")
-        print("  Examples: .venv.ml, C:\\envs\\yolo-env, /home/user/venvs/ml")
-        cfg["venv"] = _prompt("Venv path", None, _validate_venv)
 
     # ── Dataset ───────────────────────────────────────────────────────
     if args.data:
@@ -305,9 +272,7 @@ def collect_config(args: argparse.Namespace) -> dict:
     if args.device:
         cfg["device"] = args.device
     else:
-        # Probe CUDA to show the user what's available
-        venv_path = Path(cfg["venv"]).resolve()
-        gpu_info = _check_cuda(venv_path)
+        gpu_info = _check_cuda()
         print()
         if gpu_info["available"]:
             for i, name in enumerate(gpu_info["devices"]):
@@ -341,7 +306,7 @@ def print_summary(cfg: dict) -> None:
         ("Output",   cfg["output"]),
         ("Name",     cfg["name"]),
         ("Device",   cfg["device"]),
-        ("Venv",     cfg["venv"]),
+        ("Venv",     sys.prefix),
     ]
     for label, value in rows:
         content = f"  {label + ':':<11} {value}"
@@ -390,29 +355,26 @@ def train(cfg: dict) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # 1. Ensure we're in a venv
+    _check_active_venv()
+
+    # 2. Parse args
     args = parse_args()
 
-    # 1. Collect all configuration (CLI + interactive fallback)
+    # 3. Ensure required packages are installed
+    _ensure_packages()
+
+    # 4. Collect all configuration (CLI + interactive fallback)
     cfg = collect_config(args)
 
-    # 2. Resolve venv path
-    venv_path = Path(cfg["venv"]).resolve()
-
-    # 3. Ensure required packages are installed in the venv
-    _ensure_packages(venv_path)
-
-    # 4. Validate dataset
+    # 5. Validate dataset
     _check_dataset_splits(Path(cfg["data"]))
 
-    # 5. Show summary and confirm
+    # 6. Show summary and confirm
     print_summary(cfg)
     if not _confirm("\n  Start training?"):
         print("  Aborted.")
         sys.exit(0)
-
-    # 6. Re-launch under the venv's Python if needed
-    #    (this exits the current process if a re-launch happens)
-    _relaunch_in_venv(venv_path)
 
     # 7. Train
     train(cfg)
