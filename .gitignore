@@ -3,4 +3,5 @@ datasets
 models
 runs
 .env*
+!.env.gdrive-get
 hef-conv-workspace/
