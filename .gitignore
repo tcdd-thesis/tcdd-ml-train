@@ -4,4 +4,5 @@ models
 runs
 .env*
 !.env.gdrive-get
-hef-conv-workspace/
+hef-conv-scripts/workspace/
+hef-conv-scripts/outputs/
