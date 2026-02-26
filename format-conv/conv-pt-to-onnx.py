@@ -166,11 +166,25 @@ def _hailo_detect_forward(self, x):
 
     Instead of concatenating box+cls and decoding, output the 6 individual
     conv tensors that Hailo's NMS postprocess command expects to find.
+
+    Supports both legacy (v8/v9/v11) models that use cv2/cv3, and newer
+    end-to-end models (e.g. YOLO26) that use one2one_cv2/one2one_cv3.
     """
+    # Newer end-to-end architectures (YOLO26, etc.) may set cv2/cv3 to None
+    # and use one2one_cv2/one2one_cv3 as the primary heads instead.
+    box_head = self.cv2 if self.cv2 is not None else getattr(self, "one2one_cv2", None)
+    cls_head = self.cv3 if self.cv3 is not None else getattr(self, "one2one_cv3", None)
+
+    if box_head is None or cls_head is None:
+        raise RuntimeError(
+            "Detect head has neither cv2/cv3 nor one2one_cv2/one2one_cv3. "
+            "This model architecture is not supported for Hailo export."
+        )
+
     outputs = []
     for i in range(self.nl):          # nl = number of detection scales (3)
-        outputs.append(self.cv2[i](x[i]))  # bbox regression conv
-        outputs.append(self.cv3[i](x[i]))  # classification conv
+        outputs.append(box_head[i](x[i]))  # bbox regression conv
+        outputs.append(cls_head[i](x[i]))  # classification conv
     return tuple(outputs)
 
 
