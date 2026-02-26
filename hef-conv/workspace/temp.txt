@@ -1,0 +1,11 @@
+rf = Roboflow(api_key="FVJKkUdO2zUChVIOWwWw")
+project = rf.workspace("tcddthesis").project("merged-ph-tcd-1-bbox-cvat")
+version = project.version(1)
+dataset = version.download("yolov11")
+
+python roboflow-get.py -k FVJKkUdO2zUChVIOWwWw -w tcddthesis -p merged-ph-tcd-1-bbox-cvat -v 1 -f yolov11
+
+8d506d04-8148-4ae5-8387-790602a19d0b
+roboflow download -f yolov11 -l datasets tcddthesis/merged-ph-tcd-1-bbox-cvat/1
+
+.venv.ml\Scripts\python.exe -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA version:', torch.version.cuda); import torchvision; print('Torchvision:', torchvision.__version__); print('Torchvision CUDA:', hasattr(torchvision, '_C') and hasattr(torchvision._C, 'nms'))"
