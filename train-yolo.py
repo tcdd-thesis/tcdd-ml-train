@@ -212,6 +212,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-o", "--output", type=str, help="Output project directory (default: runs)")
     p.add_argument("-n", "--name", type=str, help="Run name inside output directory")
     p.add_argument("-D", "--device", type=str, help="Device: 'auto', 'cpu', '0', '0,1', etc. (default: auto)")
+    p.add_argument("-r", "--resume", action="store_true", help="Resume training from a last.pt checkpoint (use with -m path/to/last.pt)")
     return p.parse_args()
 
 
@@ -339,6 +340,7 @@ def train(cfg: dict) -> None:
         batch=cfg["batch"],
         project=cfg["output"],
         name=cfg["name"],
+        workers=4,  # limit DataLoader workers to avoid crashes on Windows
     )
     if device is not None:
         train_kwargs["device"] = device
@@ -354,6 +356,21 @@ def train(cfg: dict) -> None:
 #  Main
 # ──────────────────────────────────────────────────────────────────────
 
+def resume_training(model_path: str) -> None:
+    """Resume training from a last.pt checkpoint."""
+    from ultralytics import YOLO
+
+    p = Path(model_path)
+    if not p.exists():
+        print(f"  [ERR] Checkpoint not found: {p}")
+        sys.exit(1)
+
+    print(f"\n  Resuming training from: {p}")
+    model = YOLO(str(p))
+    model.train(resume=True, workers=4)
+    print(_banner("Training Complete (resumed)"))
+
+
 def main() -> None:
     # 1. Ensure we're in a venv
     _check_active_venv()
@@ -364,19 +381,27 @@ def main() -> None:
     # 3. Ensure required packages are installed
     _ensure_packages()
 
-    # 4. Collect all configuration (CLI + interactive fallback)
+    # 4. Handle resume mode
+    if args.resume:
+        if not args.model:
+            print("  [ERR] --resume requires --model (-m) pointing to a last.pt checkpoint.")
+            sys.exit(1)
+        resume_training(args.model)
+        return
+
+    # 5. Collect all configuration (CLI + interactive fallback)
     cfg = collect_config(args)
 
-    # 5. Validate dataset
+    # 6. Validate dataset
     _check_dataset_splits(Path(cfg["data"]))
 
-    # 6. Show summary and confirm
+    # 7. Show summary and confirm
     print_summary(cfg)
     if not _confirm("\n  Start training?"):
         print("  Aborted.")
         sys.exit(0)
 
-    # 7. Train
+    # 8. Train
     train(cfg)
 
 
